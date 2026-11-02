@@ -36,6 +36,13 @@ thinks the device is folded and shuts off the internal keyboard as
    - **Tablet ON / OFF / Auto** — forces or releases the touch-optimized
      taskbar. No admin needed. Confirms an Explorer restart so it applies
      instantly (taskbar flickers briefly — normal).
+   - **EC Reset Guide (needs physical power-hold)** — automates the software
+     half of an Embedded Controller reset by scheduling a full shutdown
+     (30-second countdown, bypassing Windows Fast Startup; cancel anytime
+     with `shutdown /a`) and logs the physical steps you must do by hand:
+     unplug charger and all USB devices after the screen goes dark, hold
+     the physical power button for 15–20 seconds to drain residual power,
+     replug, power on, and re-check posture. No admin needed.
 
 In File Explorer, turn on `View > Show > File name extensions` to make
 sure the launcher is really
@@ -84,7 +91,7 @@ force windows 11, enable-pnpdevice sensor fix
 | File | What it is |
 |---|---|
 | `Run-Win11-TabletMode-KeyboardFix.bat` | Double-click launcher (calls the `.ps1` next to it) |
-| `Win11-TabletMode-KeyboardFix.ps1` | The tool: sensor status, keyboard fix, taskbar on/off/auto |
+| `Win11-TabletMode-KeyboardFix.ps1` | The tool: sensor status, keyboard fix, taskbar on/off/auto, EC reset guide |
 
 References: ElevenForum "Turn On or Off Tablet-optimized Taskbar in
 Windows 11", Microsoft Learn `ConvertibleSlateMode`.

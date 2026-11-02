@@ -21,9 +21,38 @@ function Get-Dw([string]$Path, [string]$Name) {
 }
 
 function Get-SensorState {
-  $devs = Get-PnpDevice -FriendlyName '*Integrated Sensor*' -ErrorAction SilentlyContinue
-  if (-not $devs) { $devs = Get-PnpDevice -FriendlyName '*Intel*Sensor*' -ErrorAction SilentlyContinue }
-  return $devs
+  $patterns = @('*Integrated Sensor*', '*Intel*Sensor*', '*ISH*', '*Sensor Hub*', '*Accelerometer*')
+  $seen = @{}
+  $results = @()
+  foreach ($p in $patterns) {
+    try {
+      $found = Get-PnpDevice -FriendlyName $p -ErrorAction SilentlyContinue
+      if ($found) {
+        foreach ($d in $found) {
+          if ($d.InstanceId -and -not $seen.ContainsKey($d.InstanceId)) {
+            $seen[$d.InstanceId] = $true
+            $results += $d
+          }
+        }
+      }
+    } catch {}
+  }
+  if ($results.Count -eq 0) { return $null }
+  return $results
+}
+
+function Get-ProblemCode([string]$InstanceId) {
+  try {
+    if ([string]::IsNullOrWhiteSpace($InstanceId)) { return $null }
+    $prop = Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop
+    if ($null -ne $prop) {
+      $val = if ($prop -is [array]) { $prop[0].Data } else { $prop.Data }
+      if ($null -ne $val) { return [int]$val }
+    }
+    return $null
+  } catch {
+    return $null
+  }
 }
 
 function Write-Log([string]$msg) {
@@ -33,7 +62,7 @@ function Write-Log([string]$msg) {
 # ---------- Form ----------
 $frm = New-Object Windows.Forms.Form
 $frm.Text = 'Win11 Tablet Mode Keyboard Fix'
-$frm.Size = New-Object Drawing.Size(480, 600)
+$frm.Size = New-Object Drawing.Size(480, 640)
 $frm.StartPosition = 'CenterScreen'
 $frm.FormBorderStyle = 'FixedDialog'
 $frm.MaximizeBox = $false
@@ -85,7 +114,12 @@ function Update-Status {
   $bad = @($devs | Where-Object { $_.Status -ne 'OK' })
   if (-not $devs) { $lblSensor.Text = 'Sensor: not found'; $lblSensor.ForeColor = [Drawing.Color]::Gray }
   elseif ($bad.Count -eq 0) { $lblSensor.Text = 'Sensor: OK — keyboard should work'; $lblSensor.ForeColor = [Drawing.Color]::Green }
-  else { $lblSensor.Text = 'Sensor: ' + $bad[0].Status + ' — keyboard may be dead!'; $lblSensor.ForeColor = [Drawing.Color]::Red }
+  else {
+    $code = Get-ProblemCode $bad[0].InstanceId
+    $codeSuffix = if ($null -ne $code) { " (Code $code)" } else { '' }
+    $lblSensor.Text = 'Sensor: ' + $bad[0].Status + $codeSuffix + ' — keyboard may be dead!'
+    $lblSensor.ForeColor = [Drawing.Color]::Red
+  }
 
   $slate = Get-Dw 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'ConvertibleSlateMode'
   if ($slate -eq 0) { $lblSlate.Text = 'Windows posture: TABLET (built-in keyboard disabled)'; $lblSlate.ForeColor = [Drawing.Color]::Red }
@@ -103,7 +137,7 @@ $btnRefresh = New-Object Windows.Forms.Button
 $btnRefresh.Text = 'Refresh Status'
 $btnRefresh.Location = New-Object Drawing.Point(14, $y)
 $btnRefresh.Size = New-Object Drawing.Size(438, 32)
-$btnRefresh.Add_Click({ Update-Status; Write-Log 'Status refreshed.' })
+$btnRefresh.Add_Click({ try { Update-Status; Write-Log 'Status refreshed.' } catch { Write-Log ('FAILED (refresh): ' + $_.Exception.Message) } })
 $frm.Controls.Add($btnRefresh)
 $y += 42
 
@@ -122,15 +156,82 @@ $btnFix.Add_Click({
     return
   }
   try {
-    $devs = @((Get-SensorState) | Where-Object { $_.Status -ne 'OK' })
-    if ($devs.Count -eq 0) { Write-Log 'Sensor is already OK, nothing to fix.'; return }
-    foreach ($d in $devs) {
-      Write-Log ('Enabling: ' + $d.FriendlyName + ' ...')
-      Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false
+    $candidates = Get-SensorState
+    if (-not $candidates) {
+      Write-Log 'No sensor device found matching known patterns.'
+      Write-Log 'Guidance (no sensor found): In Device Manager, select View > Show hidden devices. Look under Sensors for disabled or disconnected hardware. If missing, reinstall the vendor sensor driver.'
+      Update-Status
+      return
     }
-    Start-Sleep -Seconds 2
+
+    foreach ($d in $candidates) {
+      $code = Get-ProblemCode $d.InstanceId
+      $codeStr = if ($null -ne $code) { $code } else { 'none' }
+      $name = if ($d.FriendlyName) { $d.FriendlyName } else { $d.InstanceId }
+      Write-Log ('{0} | Status={1} | Code={2}' -f $name, $d.Status, $codeStr)
+    }
+
+    $nonOk = @($candidates | Where-Object { $_.Status -ne 'OK' })
+    if ($nonOk.Count -gt 0) {
+      foreach ($d in $nonOk) {
+        try {
+          $name = if ($d.FriendlyName) { $d.FriendlyName } else { $d.InstanceId }
+          Write-Log ('Enabling: ' + $name + ' ...')
+          Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction Stop
+        } catch {
+          Write-Log ('FAILED to enable ' + $name + ': ' + $_.Exception.Message)
+        }
+      }
+      Start-Sleep 3
+    } else {
+      Write-Log 'All candidate sensors already report Status=OK.'
+    }
+
+    $afterDevs = Get-SensorState
+    if (-not $afterDevs) {
+      Write-Log 'No sensor device found after refresh.'
+      Write-Log 'Guidance (no sensor found): In Device Manager, select View > Show hidden devices. Look under Sensors for disabled or disconnected hardware. If missing, reinstall the vendor sensor driver.'
+      Update-Status
+      return
+    }
+
+    foreach ($d in $afterDevs) {
+      $code = Get-ProblemCode $d.InstanceId
+      $codeStr = if ($null -ne $code) { $code } else { 'none' }
+      $name = if ($d.FriendlyName) { $d.FriendlyName } else { $d.InstanceId }
+      Write-Log ('After: {0} | Status={1} | Code={2}' -f $name, $d.Status, $codeStr)
+    }
     Update-Status
-    Write-Log 'Done. Test your keyboard/touchpad now.'
+
+    $afterBad = @($afterDevs | Where-Object { $_.Status -ne 'OK' })
+    if ($afterBad.Count -gt 0) {
+      $hasCode10 = $false
+      $hasCode22 = $false
+      foreach ($b in $afterBad) {
+        $c = Get-ProblemCode $b.InstanceId
+        if ($c -eq 10) { $hasCode10 = $true }
+        if ($c -eq 22) { $hasCode22 = $true }
+      }
+      if ($hasCode10) {
+        Write-Log 'Guidance (Code 10): Driver failed to start.'
+        Write-Log 'Vendor-driver reinstall steps: 1) Download the sensor driver (Intel ISH / HID Sensor) from your PC maker support site (Lenovo/Dell/HP/ASUS). 2) In Device Manager, right-click sensor > Uninstall device (check Attempt to remove driver). 3) Run the downloaded installer and reboot.'
+      }
+      if ($hasCode22) {
+        Write-Log 'Guidance (Code 22): Sensor is still disabled after enable attempt.'
+        Write-Log 'Next steps: 1) Reboot Windows. 2) If still disabled, perform EC reset: shut down, disconnect AC adapter, hold power button for 30-60 seconds, then power back on.'
+      }
+      if (-not $hasCode10 -and -not $hasCode22) {
+        Write-Log ('Guidance: Sensor is still non-OK (Status: ' + $afterBad[0].Status + '). Try rebooting or checking Device Manager.')
+      }
+    } else {
+      $slate = Get-Dw 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'ConvertibleSlateMode'
+      if ($slate -eq 0) {
+        Write-Log 'Guidance (Sensor OK yet TABLET): All sensors report OK, but Windows posture is still TABLET (ConvertibleSlateMode = 0) — built-in keyboard remains disabled.'
+        Write-Log 'Hardware posture sensor reports tablet or EC posture is desynced. Point at BIOS/EC/reboot: 1) Reboot laptop. 2) Update/reflash BIOS. 3) Perform EC reset (shut down, unplug AC, hold power button 30-60s).'
+      } else {
+        Write-Log 'Done. Sensor is OK — test your keyboard/touchpad now.'
+      }
+    }
   } catch { Write-Log ('FAILED: ' + $_.Exception.Message) }
 })
 $frm.Controls.Add($btnFix)
@@ -162,29 +263,74 @@ $btnAuto.Size = New-Object Drawing.Size(146, 32)
 $frm.Controls.Add($btnAuto)
 $y += 40
 
+$btnEc = New-Object Windows.Forms.Button
+$btnEc.Text = 'EC Reset Guide (needs physical power-hold)'
+$btnEc.Location = New-Object Drawing.Point(14, $y)
+$btnEc.Size = New-Object Drawing.Size(438, 32)
+$frm.Controls.Add($btnEc)
+$y += 42
+
 function Set-Taskbar([string]$mode) {
-  New-Item -Path $advPath -Force | Out-Null
-  New-Item -Path $expPath -Force | Out-Null
-  if ($mode -eq 'on') {
-    New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value 1 -PropertyType DWord -Force | Out-Null
-    New-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -Value 1 -PropertyType DWord -Force | Out-Null
-    Write-Log 'Taskbar: forced to TABLET.'
-  } elseif ($mode -eq 'off') {
-    New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value 0 -PropertyType DWord -Force | Out-Null
-    New-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -Value 0 -PropertyType DWord -Force | Out-Null
-    Write-Log 'Taskbar: forced to DESKTOP.'
-  } else {
-    New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value 1 -PropertyType DWord -Force | Out-Null
-    Remove-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -ErrorAction SilentlyContinue
-    Write-Log 'Taskbar: back to AUTO.'
+  try {
+    New-Item -Path $advPath -Force | Out-Null
+    New-Item -Path $expPath -Force | Out-Null
+    if ($mode -eq 'on') {
+      New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value 1 -PropertyType DWord -Force | Out-Null
+      New-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -Value 1 -PropertyType DWord -Force | Out-Null
+      Write-Log 'Taskbar: forced to TABLET.'
+    } elseif ($mode -eq 'off') {
+      New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value 0 -PropertyType DWord -Force | Out-Null
+      New-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -Value 0 -PropertyType DWord -Force | Out-Null
+      Write-Log 'Taskbar: forced to DESKTOP.'
+    } else {
+      New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value 1 -PropertyType DWord -Force | Out-Null
+      Remove-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -ErrorAction SilentlyContinue
+      Write-Log 'Taskbar: back to AUTO.'
+    }
+  } catch {
+    Write-Log ('FAILED (taskbar): ' + $_.Exception.Message)
+    Write-Log 'Registry terkunci (biasanya Explorer sedang menahan key) — tutup semua Explorer, jalankan tool sebagai admin, lalu ulangi.'
+    return
   }
-  $r = [Windows.Forms.MessageBox]::Show('Restart Explorer to apply immediately? (taskbar will flicker briefly)', 'Restart Explorer', 'YesNo', 'Question')
-  if ($r -eq 'Yes') { Stop-Process -Name explorer -Force; Start-Sleep -Seconds 2; Write-Log 'Explorer restarted.' }
+  try {
+    $r = [Windows.Forms.MessageBox]::Show('Restart Explorer to apply immediately? (taskbar will flicker briefly)', 'Restart Explorer', 'YesNo', 'Question')
+    if ($r -eq 'Yes') { Stop-Process -Name explorer -Force; Start-Sleep -Seconds 2; Write-Log 'Explorer restarted.' }
+  } catch {
+    Write-Log ('Registry tersimpan, tapi restart Explorer gagal: ' + $_.Exception.Message)
+    Write-Log 'Restart manual: Task Manager > Windows Explorer > Restart.'
+  }
   Update-Status
 }
-$btnOn.Add_Click({ Set-Taskbar 'on' })
-$btnOff.Add_Click({ Set-Taskbar 'off' })
-$btnAuto.Add_Click({ Set-Taskbar 'auto' })
+$btnOn.Add_Click({ try { Set-Taskbar 'on' } catch { Write-Log ('FAILED (taskbar): ' + $_.Exception.Message) } })
+$btnOff.Add_Click({ try { Set-Taskbar 'off' } catch { Write-Log ('FAILED (taskbar): ' + $_.Exception.Message) } })
+$btnAuto.Add_Click({ try { Set-Taskbar 'auto' } catch { Write-Log ('FAILED (taskbar): ' + $_.Exception.Message) } })
+
+function Show-EcResetGuide {
+  $prompt = "An EC (Embedded Controller) reset clears hardware state when the posture sensor or keyboard controller is stuck.`r`n`r`n" +
+            "This will schedule a FULL shutdown in 30 seconds (bypassing Fast Startup).`r`n`r`n" +
+            "After shutdown, you MUST perform the physical steps (unplug power/USB, hold physical power button 15-20s).`r`n`r`n" +
+            "Proceed with full shutdown now?"
+  $r = [Windows.Forms.MessageBox]::Show($prompt, 'EC Reset Guide', 'YesNo', 'Question')
+  if ($r -ne 'Yes') {
+    Write-Log 'EC reset cancelled.'
+    return
+  }
+
+  Write-Log 'EC Reset — Physical steps:'
+  Write-Log '1. Save work'
+  Write-Log '2. Unplug charger + all USB after dark'
+  Write-Log '3. Hold PHYSICAL power button 15-20s'
+  Write-Log '4. Replug charger'
+  Write-Log '5. Power on'
+  Write-Log '6. Reopen tool and check posture line'
+  try {
+    shutdown /s /t 30 /c 'EC RESET: save work, unplug charger+USB now. After screen goes dark, hold power 15-20s.'
+  } catch {
+    Write-Log ('FAILED (shutdown): ' + $_.Exception.Message)
+  }
+  Write-Log 'Abort hint: run "shutdown /a" in Command Prompt to cancel.'
+}
+$btnEc.Add_Click({ try { Show-EcResetGuide } catch { Write-Log ('FAILED (EC reset): ' + $_.Exception.Message) } })
 
 $txtLog = New-Object Windows.Forms.RichTextBox
 $txtLog.Location = New-Object Drawing.Point(14, $y)
