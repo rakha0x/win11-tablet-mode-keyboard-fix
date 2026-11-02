@@ -19,6 +19,8 @@ Root cause: the posture/orientation sensor is disabled, so Windows
 thinks the device is folded and shuts off the internal keyboard as
 "anti-ghostpress" behavior. Re-enabling the sensor restores everything.
 
+Note: Newer driver updates may rename the sensor to **HID Sensor Collection V2** (leaving the older Intel entry as a ghost); the tool detects both, and auto-recovers if Explorer locks taskbar registry keys.
+
 ## Use (no terminal)
 
 1. Copy these two files to the Windows 11 laptop (same folder, keep names):
@@ -49,6 +51,14 @@ thinks the device is folded and shuts off the internal keyboard as
      GPIO/Lid controllers) and exports it both to the Windows clipboard and to
      a desktop text file (`%USERPROFILE%\Desktop\TabletFix-Diag.txt`)
      so you can easily paste or attach it for remote diagnosis. No admin needed.
+   - **Force Laptop Mode (no tablet)** -- for users who never use tablet mode:
+     disables slate-reporting sensors and forces `ConvertibleSlateMode` to `1`
+     (laptop posture) so the keyboard stays active. Offers an immediate reboot
+     (30-second timer, cancelable with `shutdown /a`) to finalize driver state.
+     Requires admin; the tool offers to relaunch itself as admin. Reversible
+     at any time via the **Fix Keyboard** button. Honest limit: if the
+     firmware/EC keeps reporting tablet, Windows resets slate to `0` at boot
+     and this cannot help -- update BIOS/drivers or service the hinge sensor.
 
 In File Explorer, turn on `View > Show > File name extensions` to make
 sure the launcher is really

@@ -1,4 +1,4 @@
-# Win11-TabletMode-KeyboardFix.ps1 — fix dead keyboard/touchpad on 2-in-1 laptops stuck in tablet mode, touch-taskbar on/off, and copy diagnostics.
+# Win11-TabletMode-KeyboardFix.ps1 -- fix dead keyboard/touchpad on 2-in-1 laptops stuck in tablet mode, touch-taskbar on/off, and copy diagnostics.
 # Double-click Run-Win11-TabletMode-KeyboardFix.bat and a window appears, just press buttons.
 # PowerShell 5.1 compatible (ships with Windows 11). Admin is ONLY required for the Fix Keyboard button.
 
@@ -21,7 +21,7 @@ function Get-Dw([string]$Path, [string]$Name) {
 }
 
 function Get-SensorState {
-  $patterns = @('*Integrated Sensor*', '*Intel*Sensor*', '*ISH*', '*Sensor Hub*', '*Accelerometer*')
+  $patterns = @('*Integrated Sensor*', '*Intel*Sensor*', '*ISH*', '*Sensor Hub*', '*Accelerometer*', '*HID Sensor*', '*Sensor Collection*')
   $seen = @{}
   $results = @()
   foreach ($p in $patterns) {
@@ -172,7 +172,7 @@ function Write-Log([string]$msg) {
 # ---------- Form ----------
 $frm = New-Object Windows.Forms.Form
 $frm.Text = 'Win11 Tablet Mode Keyboard Fix'
-$frm.Size = New-Object Drawing.Size(480, 682)
+$frm.Size = New-Object Drawing.Size(480, 724)
 
 $frm.StartPosition = 'CenterScreen'
 $frm.FormBorderStyle = 'FixedDialog'
@@ -181,7 +181,7 @@ $frm.Font = New-Object Drawing.Font('Segoe UI', 9)
 
 $y = 12
 $lblTitle = New-Object Windows.Forms.Label
-$lblTitle.Text = 'Win11 Tablet Mode Keyboard Fix — no terminal needed'
+$lblTitle.Text = 'Win11 Tablet Mode Keyboard Fix -- no terminal needed'
 $lblTitle.Font = New-Object Drawing.Font('Segoe UI', 11, [Drawing.FontStyle]::Bold)
 $lblTitle.AutoSize = $true
 $lblTitle.Location = New-Object Drawing.Point(14, $y)
@@ -196,7 +196,7 @@ $y += 24
 
 function Update-AdminLabel {
   if (Test-Admin) { $lblAdmin.Text = 'Mode: Administrator (all buttons work)'; $lblAdmin.ForeColor = [Drawing.Color]::Green }
-  else { $lblAdmin.Text = 'Mode: standard — the Fix Keyboard button needs admin'; $lblAdmin.ForeColor = [Drawing.Color]::DarkOrange }
+  else { $lblAdmin.Text = 'Mode: standard -- the Fix Keyboard button needs admin'; $lblAdmin.ForeColor = [Drawing.Color]::DarkOrange }
 }
 
 $grp = New-Object Windows.Forms.GroupBox
@@ -224,11 +224,11 @@ function Update-Status {
   $devs = Get-SensorState
   $bad = @($devs | Where-Object { $_.Status -ne 'OK' })
   if (-not $devs) { $lblSensor.Text = 'Sensor: not found'; $lblSensor.ForeColor = [Drawing.Color]::Gray }
-  elseif ($bad.Count -eq 0) { $lblSensor.Text = 'Sensor: OK — keyboard should work'; $lblSensor.ForeColor = [Drawing.Color]::Green }
+  elseif ($bad.Count -eq 0) { $lblSensor.Text = 'Sensor: OK -- keyboard should work'; $lblSensor.ForeColor = [Drawing.Color]::Green }
   else {
     $code = Get-ProblemCode $bad[0].InstanceId
     $codeSuffix = if ($null -ne $code) { " (Code $code)" } else { '' }
-    $lblSensor.Text = 'Sensor: ' + $bad[0].Status + $codeSuffix + ' — keyboard may be dead!'
+    $lblSensor.Text = 'Sensor: ' + $bad[0].Status + $codeSuffix + ' -- keyboard may be dead!'
     $lblSensor.ForeColor = [Drawing.Color]::Red
   }
 
@@ -337,10 +337,10 @@ $btnFix.Add_Click({
     } else {
       $slate = Get-Dw 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'ConvertibleSlateMode'
       if ($slate -eq 0) {
-        Write-Log 'Guidance (Sensor OK yet TABLET): All sensors report OK, but Windows posture is still TABLET (ConvertibleSlateMode = 0) — built-in keyboard remains disabled.'
+        Write-Log 'Guidance (Sensor OK yet TABLET): All sensors report OK, but Windows posture is still TABLET (ConvertibleSlateMode = 0) -- built-in keyboard remains disabled.'
         Write-Log 'Hardware posture sensor reports tablet or EC posture is desynced. Point at BIOS/EC/reboot: 1) Reboot laptop. 2) Update/reflash BIOS. 3) Perform EC reset (shut down, unplug AC, hold power button 30-60s).'
       } else {
-        Write-Log 'Done. Sensor is OK — test your keyboard/touchpad now.'
+        Write-Log 'Done. Sensor is OK -- test your keyboard/touchpad now.'
       }
     }
   } catch { Write-Log ('FAILED: ' + $_.Exception.Message) }
@@ -388,36 +388,139 @@ $btnDiag.Size = New-Object Drawing.Size(438, 32)
 $frm.Controls.Add($btnDiag)
 $y += 42
 
+$btnForce = New-Object Windows.Forms.Button
+$btnForce.Text = 'Force Laptop Mode (no tablet)'
+$btnForce.Location = New-Object Drawing.Point(14, $y)
+$btnForce.Size = New-Object Drawing.Size(438, 32)
+$frm.Controls.Add($btnForce)
+$y += 42
+
 function Set-Taskbar([string]$mode) {
   try {
-    New-Item -Path $advPath -Force | Out-Null
-    New-Item -Path $expPath -Force | Out-Null
-    if ($mode -eq 'on') {
-      New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value 1 -PropertyType DWord -Force | Out-Null
-      New-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -Value 1 -PropertyType DWord -Force | Out-Null
-      Write-Log 'Taskbar: forced to TABLET.'
-    } elseif ($mode -eq 'off') {
-      New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value 0 -PropertyType DWord -Force | Out-Null
-      New-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -Value 0 -PropertyType DWord -Force | Out-Null
-      Write-Log 'Taskbar: forced to DESKTOP.'
+    if (-not (Test-Path $advPath)) { New-Item -Path $advPath -Force -ErrorAction SilentlyContinue | Out-Null }
+    if (-not (Test-Path $expPath)) { New-Item -Path $expPath -Force -ErrorAction SilentlyContinue | Out-Null }
+
+    $writeExpandable = {
+      $val = if ($mode -eq 'off') { 0 } else { 1 }
+      New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value $val -PropertyType DWord -Force -ErrorAction Stop | Out-Null
+    }
+
+    $writePosture = {
+      if ($mode -eq 'on') {
+        New-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -Value 1 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
+      } elseif ($mode -eq 'off') {
+        New-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -Value 0 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
+      } else {
+        try {
+          Remove-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -Force -ErrorAction Stop
+        } catch [System.Management.Automation.PSArgumentException], [System.Management.Automation.ItemNotFoundException], [System.ArgumentException] {
+          # Property does not exist; already in AUTO state
+        }
+      }
+    }
+
+    $expFailed = $false
+    $posFailed = $false
+    $hasUnauthorized = $false
+
+    try {
+      & $writeExpandable
+    } catch {
+      $expFailed = $true
+      Write-Log ('FAILED to write ExpandableTaskbar: ' + $_.Exception.Message)
+      if ($_.Exception -is [System.UnauthorizedAccessException] -or $_.Exception -is [System.Security.SecurityException] -or $_.Exception.Message -match 'Unauthorized|Access is denied|denied') {
+        $hasUnauthorized = $true
+      }
+    }
+
+    try {
+      & $writePosture
+    } catch {
+      $posFailed = $true
+      Write-Log ('FAILED to write TabletPostureTaskbar: ' + $_.Exception.Message)
+      if ($_.Exception -is [System.UnauthorizedAccessException] -or $_.Exception -is [System.Security.SecurityException] -or $_.Exception.Message -match 'Unauthorized|Access is denied|denied') {
+        $hasUnauthorized = $true
+      }
+    }
+
+    if ($hasUnauthorized) {
+      $msg = "Writing taskbar registry values failed due to unauthorized access (Explorer may be locking the key).`r`n`r`nStop Explorer, retry writing the values, and restart Explorer?"
+      $r = [Windows.Forms.MessageBox]::Show($msg, 'Registry Locked by Explorer', 'YesNo', 'Warning')
+      if ($r -eq 'Yes') {
+        Write-Log 'Stopping Explorer...'
+        try {
+          Stop-Process -Name explorer -Force -ErrorAction Stop
+          Start-Sleep -Seconds 2
+          Write-Log 'Explorer stopped.'
+        } catch {
+          Write-Log ('FAILED to stop Explorer: ' + $_.Exception.Message)
+        }
+
+        Write-Log 'Retrying failed registry writes...'
+        if ($expFailed) {
+          try {
+            & $writeExpandable
+            $expFailed = $false
+            Write-Log 'ExpandableTaskbar written successfully.'
+          } catch {
+            Write-Log ('FAILED to write ExpandableTaskbar on retry: ' + $_.Exception.Message)
+          }
+        }
+        if ($posFailed) {
+          try {
+            & $writePosture
+            $posFailed = $false
+            Write-Log 'TabletPostureTaskbar written successfully.'
+          } catch {
+            Write-Log ('FAILED to write TabletPostureTaskbar on retry: ' + $_.Exception.Message)
+          }
+        }
+
+        Write-Log 'Restarting Explorer...'
+        try {
+          Start-Process explorer.exe
+          Start-Sleep -Seconds 2
+          Write-Log 'Explorer restarted.'
+        } catch {
+          Write-Log ('FAILED to restart Explorer: ' + $_.Exception.Message)
+        }
+
+        if ($expFailed -or $posFailed) {
+          Write-Log 'Retry failed to write all registry values.'
+          Write-Log 'Manual steps: 1) Open Task Manager, end Windows Explorer task. 2) Run this tool as Administrator. 3) Re-apply taskbar setting. 4) Run new task explorer.exe.'
+        } else {
+          if ($mode -eq 'on') { Write-Log 'Taskbar: forced to TABLET.' }
+          elseif ($mode -eq 'off') { Write-Log 'Taskbar: forced to DESKTOP.' }
+          else { Write-Log 'Taskbar: back to AUTO.' }
+        }
+      } else {
+        Write-Log 'Explorer stop declined by user.'
+        Write-Log 'Manual steps: 1) Close all File Explorer windows or restart Explorer. 2) Run this tool as Administrator. 3) Re-apply taskbar setting.'
+      }
+    } elseif ($expFailed -or $posFailed) {
+      Write-Log 'Manual steps: 1) Run this tool as Administrator. 2) Check registry permissions for Explorer key.'
     } else {
-      New-ItemProperty -Path $advPath -Name 'ExpandableTaskbar' -Value 1 -PropertyType DWord -Force | Out-Null
-      Remove-ItemProperty -Path $expPath -Name 'TabletPostureTaskbar' -ErrorAction SilentlyContinue
-      Write-Log 'Taskbar: back to AUTO.'
+      if ($mode -eq 'on') { Write-Log 'Taskbar: forced to TABLET.' }
+      elseif ($mode -eq 'off') { Write-Log 'Taskbar: forced to DESKTOP.' }
+      else { Write-Log 'Taskbar: back to AUTO.' }
+
+      try {
+        $r = [Windows.Forms.MessageBox]::Show('Restart Explorer to apply immediately? (taskbar will flicker briefly)', 'Restart Explorer', 'YesNo', 'Question')
+        if ($r -eq 'Yes') {
+          Stop-Process -Name explorer -Force
+          Start-Sleep -Seconds 2
+          Write-Log 'Explorer restarted.'
+        }
+      } catch {
+        Write-Log ('Registry saved, but restarting Explorer failed: ' + $_.Exception.Message)
+        Write-Log 'Manual restart: Task Manager -> Windows Explorer -> Restart.'
+      }
     }
   } catch {
     Write-Log ('FAILED (taskbar): ' + $_.Exception.Message)
-    Write-Log 'Registry terkunci (biasanya Explorer sedang menahan key) — tutup semua Explorer, jalankan tool sebagai admin, lalu ulangi.'
-    return
+  } finally {
+    try { Update-Status } catch {}
   }
-  try {
-    $r = [Windows.Forms.MessageBox]::Show('Restart Explorer to apply immediately? (taskbar will flicker briefly)', 'Restart Explorer', 'YesNo', 'Question')
-    if ($r -eq 'Yes') { Stop-Process -Name explorer -Force; Start-Sleep -Seconds 2; Write-Log 'Explorer restarted.' }
-  } catch {
-    Write-Log ('Registry tersimpan, tapi restart Explorer gagal: ' + $_.Exception.Message)
-    Write-Log 'Restart manual: Task Manager > Windows Explorer > Restart.'
-  }
-  Update-Status
 }
 $btnOn.Add_Click({ try { Set-Taskbar 'on' } catch { Write-Log ('FAILED (taskbar): ' + $_.Exception.Message) } })
 $btnOff.Add_Click({ try { Set-Taskbar 'off' } catch { Write-Log ('FAILED (taskbar): ' + $_.Exception.Message) } })
@@ -434,7 +537,7 @@ function Show-EcResetGuide {
     return
   }
 
-  Write-Log 'EC Reset — Physical steps:'
+  Write-Log 'EC Reset -- Physical steps:'
   Write-Log '1. Save work'
   Write-Log '2. Unplug charger + all USB after dark'
   Write-Log '3. Hold PHYSICAL power button 15-20s'
@@ -520,6 +623,74 @@ function Copy-Diagnostics {
   }
 }
 $btnDiag.Add_Click({ try { Copy-Diagnostics } catch { Write-Log ('FAILED (copy diagnostics): ' + $_.Exception.Message) } })
+
+function Set-ForceLaptopMode {
+  try {
+    if (-not (Test-Admin)) {
+      $r = [Windows.Forms.MessageBox]::Show('Admin rights required. Relaunch this tool as admin now?', 'Admin Required', 'YesNo', 'Warning')
+      if ($r -eq 'Yes') {
+        Start-Process powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$PSCommandPath" -Verb RunAs
+        $frm.Close()
+      }
+      return
+    }
+
+    $sensorDevs = Get-SensorState
+    $matchedAny = $false
+    if ($sensorDevs) {
+      foreach ($d in $sensorDevs) {
+        $name = if ($d.FriendlyName) { $d.FriendlyName } elseif ($d.Name) { $d.Name } else { $d.InstanceId }
+        if ($name -like '*Sensor*' -or $name -like '*ISH*' -or $d.InstanceId -like '*Sensor*' -or $d.InstanceId -like '*ISH*') {
+          $matchedAny = $true
+          try {
+            Write-Log ('Disabling: ' + $name + ' ...')
+            Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction Stop
+            Write-Log ('Disabled: ' + $name)
+          } catch {
+            Write-Log ('FAILED to disable ' + $name + ': ' + $_.Exception.Message)
+          }
+        }
+      }
+    }
+    if (-not $matchedAny) {
+      Write-Log 'No sensor devices matching *Sensor* or *ISH* found.'
+    }
+
+    try {
+      $priorityKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl'
+      if (-not (Test-Path $priorityKey)) {
+        New-Item -Path $priorityKey -Force -ErrorAction SilentlyContinue | Out-Null
+      }
+      New-ItemProperty -Path $priorityKey -Name 'ConvertibleSlateMode' -Value 1 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
+      Write-Log 'Set ConvertibleSlateMode = 1 (Laptop mode).'
+    } catch {
+      Write-Log ('FAILED to set ConvertibleSlateMode: ' + $_.Exception.Message)
+    }
+
+    try { Update-Status } catch {}
+
+    Write-Log 'Undo: Fix Keyboard button (re-enables sensors) + reboot restores driver state.'
+    Write-Log 'Note: if firmware/EC keeps reporting tablet, Windows will reset slate to 0 at boot and this cannot help -- update BIOS/drivers or service the hinge sensor.'
+
+    $rebootMsg = "Force Laptop Mode applied.`r`n`r`nReboot now? (30-second delay to save your work)"
+    $r = [Windows.Forms.MessageBox]::Show($rebootMsg, 'Reboot Recommended', 'YesNo', 'Question')
+    if ($r -eq 'Yes') {
+      try {
+        shutdown /r /t 30 /c 'Force Laptop Mode applied. Rebooting in 30s. Run shutdown /a to cancel.'
+        Write-Log 'Reboot scheduled in 30 seconds.'
+      } catch {
+        Write-Log ('FAILED (shutdown): ' + $_.Exception.Message)
+      }
+      Write-Log 'Abort hint: run "shutdown /a" in Command Prompt to cancel.'
+    } else {
+      Write-Log 'Reboot postponed by user.'
+    }
+  } catch {
+    Write-Log ('FAILED (force laptop mode): ' + $_.Exception.Message)
+  }
+}
+$btnForce.Add_Click({ try { Set-ForceLaptopMode } catch { Write-Log ('FAILED (force laptop mode): ' + $_.Exception.Message) } })
+
 
 
 $txtLog = New-Object Windows.Forms.RichTextBox
