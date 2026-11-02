@@ -1,4 +1,4 @@
-# Win11-TabletMode-KeyboardFix.ps1 — fix dead keyboard/touchpad on 2-in-1 laptops stuck in tablet mode, plus touch-taskbar on/off.
+# Win11-TabletMode-KeyboardFix.ps1 — fix dead keyboard/touchpad on 2-in-1 laptops stuck in tablet mode, touch-taskbar on/off, and copy diagnostics.
 # Double-click Run-Win11-TabletMode-KeyboardFix.bat and a window appears, just press buttons.
 # PowerShell 5.1 compatible (ships with Windows 11). Admin is ONLY required for the Fix Keyboard button.
 
@@ -54,6 +54,116 @@ function Get-ProblemCode([string]$InstanceId) {
     return $null
   }
 }
+function Get-ToolDiagnostics {
+  $lines = @()
+  $lines += ('Timestamp: {0:yyyy-MM-dd HH:mm:ss}' -f (Get-Date))
+
+  # 1. OS caption + build
+  try {
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    $caption = if ($os.Caption) { $os.Caption.Trim() } else { 'Windows' }
+    $build = if ($os.BuildNumber) { $os.BuildNumber } else { 'Unknown' }
+    $lines += "OS: $caption (Build $build)"
+  } catch {
+    $lines += "OS: Error ($($_.Exception.Message))"
+  }
+
+  # 2. Admin status
+  try {
+    $isAdmin = if (Test-Admin) { 'yes' } else { 'no' }
+    $lines += "Admin: $isAdmin"
+  } catch {
+    $lines += "Admin: Error ($($_.Exception.Message))"
+  }
+
+  # 3. Sensors
+  try {
+    $sensorDevs = Get-SensorState
+    if ($sensorDevs) {
+      foreach ($s in $sensorDevs) {
+        $code = Get-ProblemCode $s.InstanceId
+        $codeStr = if ($null -ne $code) { $code } else { 'none' }
+        $name = if ($s.FriendlyName) { $s.FriendlyName } elseif ($s.Name) { $s.Name } else { $s.InstanceId }
+        $status = if ($s.Status) { $s.Status } else { 'Unknown' }
+        $lines += "SENSOR: $name | Status=$status | Code=$codeStr"
+      }
+    } else {
+      $lines += "SENSOR: none found"
+    }
+  } catch {
+    $lines += "SENSOR: Error ($($_.Exception.Message))"
+  }
+
+  # 4. Raw registry posture and taskbar values
+  try {
+    $slate = Get-Dw 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'ConvertibleSlateMode'
+    $slateStr = if ($null -ne $slate) { $slate } else { 'null' }
+    $lines += "ConvertibleSlateMode: $slateStr"
+
+    $pos = Get-Dw $expPath 'TabletPostureTaskbar'
+    $posStr = if ($null -ne $pos) { $pos } else { 'null' }
+    $lines += "TabletPostureTaskbar: $posStr"
+
+    $exp = Get-Dw $advPath 'ExpandableTaskbar'
+    $expStr = if ($null -ne $exp) { $exp } else { 'null' }
+    $lines += "ExpandableTaskbar: $expStr"
+  } catch {
+    $lines += "Registry: Error ($($_.Exception.Message))"
+  }
+
+  # 5. Keyboard devices
+  try {
+    $kbDevs = @(Get-PnpDevice -Class Keyboard -ErrorAction Stop)
+    if ($kbDevs.Count -gt 0) {
+      foreach ($k in $kbDevs) {
+        $code = Get-ProblemCode $k.InstanceId
+        $codeStr = if ($null -ne $code) { $code } else { 'none' }
+        $name = if ($k.FriendlyName) { $k.FriendlyName } elseif ($k.Name) { $k.Name } else { $k.InstanceId }
+        $status = if ($k.Status) { $k.Status } else { 'Unknown' }
+        $lines += "KEYBOARD: $name | Status=$status | Code=$codeStr"
+      }
+    } else {
+      $lines += "KEYBOARD: none found"
+    }
+  } catch {
+    $lines += "KEYBOARD: Error ($($_.Exception.Message))"
+  }
+
+  # 6. GPIO / Lid / Serial IO devices
+  try {
+    $gpioPatterns = @('*GPIO*', '*Lid*', '*Serial IO*')
+    $seenGpio = @{}
+    $gpioDevs = @()
+    foreach ($p in $gpioPatterns) {
+      try {
+        $found = @(Get-PnpDevice -FriendlyName $p -ErrorAction SilentlyContinue)
+        foreach ($d in $found) {
+          $key = if ($d.InstanceId) { $d.InstanceId } else { $d.FriendlyName }
+          if ($key -and -not $seenGpio.ContainsKey($key)) {
+            $seenGpio[$key] = $true
+            $gpioDevs += $d
+          }
+        }
+      } catch {}
+    }
+    if ($gpioDevs.Count -gt 0) {
+      foreach ($g in $gpioDevs) {
+        $code = Get-ProblemCode $g.InstanceId
+        $codeStr = if ($null -ne $code) { $code } else { 'none' }
+        $name = if ($g.FriendlyName) { $g.FriendlyName } elseif ($g.Name) { $g.Name } else { $g.InstanceId }
+        $status = if ($g.Status) { $g.Status } else { 'Unknown' }
+        $lines += "GPIO/LID: $name | Status=$status | Code=$codeStr"
+      }
+    } else {
+      $lines += "GPIO/LID: none found"
+    }
+  } catch {
+    $lines += "GPIO/LID: Error ($($_.Exception.Message))"
+  }
+
+  return [string[]]$lines
+}
+
 
 function Write-Log([string]$msg) {
   $txtLog.AppendText(('[{0:HH:mm:ss}] {1}' -f (Get-Date), $msg) + "`r`n")
@@ -62,7 +172,8 @@ function Write-Log([string]$msg) {
 # ---------- Form ----------
 $frm = New-Object Windows.Forms.Form
 $frm.Text = 'Win11 Tablet Mode Keyboard Fix'
-$frm.Size = New-Object Drawing.Size(480, 640)
+$frm.Size = New-Object Drawing.Size(480, 682)
+
 $frm.StartPosition = 'CenterScreen'
 $frm.FormBorderStyle = 'FixedDialog'
 $frm.MaximizeBox = $false
@@ -270,6 +381,13 @@ $btnEc.Size = New-Object Drawing.Size(438, 32)
 $frm.Controls.Add($btnEc)
 $y += 42
 
+$btnDiag = New-Object Windows.Forms.Button
+$btnDiag.Text = 'Copy Diagnostics'
+$btnDiag.Location = New-Object Drawing.Point(14, $y)
+$btnDiag.Size = New-Object Drawing.Size(438, 32)
+$frm.Controls.Add($btnDiag)
+$y += 42
+
 function Set-Taskbar([string]$mode) {
   try {
     New-Item -Path $advPath -Force | Out-Null
@@ -331,6 +449,78 @@ function Show-EcResetGuide {
   Write-Log 'Abort hint: run "shutdown /a" in Command Prompt to cancel.'
 }
 $btnEc.Add_Click({ try { Show-EcResetGuide } catch { Write-Log ('FAILED (EC reset): ' + $_.Exception.Message) } })
+
+function Copy-Diagnostics {
+  $lines = Get-ToolDiagnostics
+  $text = $lines -join "`r`n"
+  $diagPath = "$env:USERPROFILE\Desktop\TabletFix-Diag.txt"
+
+  $clipOk = $false
+  $clipErr = $null
+  try {
+    Set-Clipboard -Value $text -ErrorAction Stop
+    $clipOk = $true
+  } catch {
+    try {
+      [Windows.Forms.Clipboard]::SetText($text)
+      $clipOk = $true
+    } catch {
+      $clipErr = $_.Exception.Message
+    }
+  }
+
+  $fileOk = $false
+  $fileErr = $null
+  try {
+    $desktopDir = Split-Path $diagPath -Parent
+    if ($desktopDir -and -not (Test-Path $desktopDir)) {
+      New-Item -ItemType Directory -Path $desktopDir -Force -ErrorAction Stop | Out-Null
+    }
+    [System.IO.File]::WriteAllText($diagPath, ($text + "`r`n"), [System.Text.Encoding]::UTF8)
+    $fileOk = $true
+  } catch {
+    $fileErr = $_.Exception.Message
+  }
+
+  if ($clipOk -and $fileOk) {
+    Write-Log ('Diagnostics copied to clipboard and saved to: ' + $diagPath)
+  } elseif ($clipOk -and -not $fileOk) {
+    Write-Log ('Diagnostics copied to clipboard. (File save failed: ' + $fileErr + ')')
+  } elseif (-not $clipOk -and $fileOk) {
+    Write-Log ('Diagnostics saved to ' + $diagPath + '. (Clipboard failed: ' + $clipErr + ')')
+  } else {
+    Write-Log ('FAILED to export diagnostics. Clipboard: ' + $clipErr + ' | File: ' + $fileErr)
+  }
+
+  try {
+    $sensorSummary = 'Sensor: none found'
+    $devs = Get-SensorState
+    if ($devs -and $devs.Count -gt 0) {
+      $d0 = $devs[0]
+      $c0 = Get-ProblemCode $d0.InstanceId
+      $c0Str = if ($null -ne $c0) { "Code $c0" } else { 'no problem code' }
+      $d0Name = if ($d0.FriendlyName) { $d0.FriendlyName } elseif ($d0.Name) { $d0.Name } else { $d0.InstanceId }
+      $sensorSummary = "Sensor: $d0Name ($($d0.Status), $c0Str)"
+    }
+
+    $slate = Get-Dw 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'ConvertibleSlateMode'
+    $postureSummary = if ($slate -eq 0) {
+      'Posture: TABLET (0x0)'
+    } elseif ($slate -eq 1) {
+      'Posture: LAPTOP (0x1)'
+    } elseif ($null -ne $slate) {
+      "Posture: raw $slate"
+    } else {
+      'Posture: unreadable'
+    }
+
+    Write-Log ("Summary: $sensorSummary | $postureSummary")
+  } catch {
+    Write-Log ('Summary error: ' + $_.Exception.Message)
+  }
+}
+$btnDiag.Add_Click({ try { Copy-Diagnostics } catch { Write-Log ('FAILED (copy diagnostics): ' + $_.Exception.Message) } })
+
 
 $txtLog = New-Object Windows.Forms.RichTextBox
 $txtLog.Location = New-Object Drawing.Point(14, $y)
